@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .db import Store
-from .demo import load_demo_session
+from .demo import load_demo_session, load_extra_demo_sessions
 from .graph_builder import build_graph, inspector_for
 from .models import (
     GraphMetric,
@@ -56,11 +56,19 @@ class DemoBody(BaseModel):
     force: bool = False
 
 
+def _seed_demos(force: bool = False) -> SessionSummary:
+    sid, project, requests, tools = load_demo_session(SAMPLE_DIR)
+    primary = store.upsert_session(sid, project, requests, tools, source="demo")
+    for esid, eproject, ereqs, etools in load_extra_demo_sessions(SAMPLE_DIR):
+        if force or not store.get_summary(esid):
+            store.upsert_session(esid, eproject, ereqs, etools, source="demo")
+    return primary
+
+
 @app.on_event("startup")
 def seed_demo_if_empty() -> None:
     if not store.list_sessions():
-        sid, project, requests, tools = load_demo_session(SAMPLE_DIR)
-        store.upsert_session(sid, project, requests, tools, source="demo")
+        _seed_demos(force=True)
 
 
 @app.get("/api/health")
@@ -160,9 +168,12 @@ def import_sessions(body: ImportBody) -> ImportResult:
 def load_demo(body: DemoBody = DemoBody()) -> SessionSummary:
     existing = store.get_summary("demo-session-token-graph-001")
     if existing and not body.force:
+        # Still ensure extras exist for browsing
+        for esid, eproject, ereqs, etools in load_extra_demo_sessions(SAMPLE_DIR):
+            if not store.get_summary(esid):
+                store.upsert_session(esid, eproject, ereqs, etools, source="demo")
         return existing
-    sid, project, requests, tools = load_demo_session(SAMPLE_DIR)
-    return store.upsert_session(sid, project, requests, tools, source="demo")
+    return _seed_demos(force=True)
 
 
 @app.delete("/api/sessions/{session_id}")

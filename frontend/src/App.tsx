@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
 import { GraphCanvas } from './components/GraphCanvas'
 import { Inspector } from './components/Inspector'
+import { SessionBrowser } from './components/SessionBrowser'
 import { formatCost, formatTokens } from './lib/metrics'
 import type {
   GraphMetric,
@@ -23,11 +24,16 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
 
   const refreshSessions = useCallback(async (preferId?: string) => {
     const list = await api.sessions()
     setSessions(list)
-    setSessionId((prev) => preferId || prev || list[0]?.id || null)
+    setSessionId((prev) => {
+      if (preferId) return preferId
+      if (prev && list.some((s) => s.id === prev)) return prev
+      return list[0]?.id || null
+    })
   }, [])
 
   useEffect(() => {
@@ -60,7 +66,6 @@ export default function App() {
       .catch((e: Error) => setError(e.message))
   }, [sessionId, selectedId, view, metric])
 
-  // Attribution view defaults to amplified metric
   useEffect(() => {
     if (view === 'attribution' && metric === 'direct') {
       setMetric('amplified')
@@ -75,7 +80,7 @@ export default function App() {
     try {
       const s = await api.loadDemo()
       await refreshSessions(s.id)
-      setStatus('Loaded demo session.')
+      setStatus('Loaded demo sessions.')
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -87,7 +92,7 @@ export default function App() {
     setBusy(true)
     setStatus(null)
     try {
-      const res = await api.importLocal(30)
+      const res = await api.importLocal(90)
       await refreshSessions(res.sessions[0]?.id)
       setStatus(res.message)
     } catch (e) {
@@ -104,8 +109,8 @@ export default function App() {
           <p className="tg-brand">Token Graph</p>
           <h1>See where agent tokens go — and why they keep costing.</h1>
           <p className="tg-lede">
-            A local-first profiler for Claude Code sessions. Execution shows what happened;
-            attribution shows which files, tools, and subagents amplified the bill.
+            Browse every Claude Code session, inspect prompts and thinking on each step,
+            and see cost alongside token amplification.
           </p>
         </div>
         <div className="tg-hero-actions">
@@ -120,20 +125,15 @@ export default function App() {
       </header>
 
       <div className="tg-toolbar">
-        <label className="tg-field">
-          <span>Session</span>
-          <select
-            value={sessionId ?? ''}
-            onChange={(e) => setSessionId(e.target.value || null)}
-          >
-            {sessions.length === 0 && <option value="">No sessions</option>}
-            {sessions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.project} · {s.id.slice(0, 10)} · {s.request_count} reqs
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="tg-active-session">
+          <span className="tg-field-label">Open</span>
+          <strong>{active?.title || active?.id?.slice(0, 12) || 'No session'}</strong>
+          {active && (
+            <span className="tg-muted">
+              {active.project} · {formatCost(active.cost_usd)} · {active.request_count} reqs
+            </span>
+          )}
+        </div>
 
         <div className="tg-segment" role="group" aria-label="Graph view">
           <button
@@ -169,7 +169,7 @@ export default function App() {
         </div>
 
         <label className="tg-field tg-search">
-          <span>Search</span>
+          <span>Filter graph</span>
           <input
             type="search"
             placeholder="File, tool, request…"
@@ -196,7 +196,14 @@ export default function App() {
         </div>
       )}
 
-      <main className="tg-main">
+      <main className={`tg-main ${sessionsCollapsed ? 'sessions-collapsed' : ''}`}>
+        <SessionBrowser
+          sessions={sessions}
+          activeId={sessionId}
+          onSelect={setSessionId}
+          collapsed={sessionsCollapsed}
+          onToggle={() => setSessionsCollapsed((v) => !v)}
+        />
         <GraphCanvas
           graph={graph}
           view={view}
@@ -215,7 +222,7 @@ export default function App() {
 
       <footer className="tg-footer">
         <span>
-          Area scales with the selected metric · Parser adapted from{' '}
+          Area scales with the selected metric · cost shown on every node when known · Parser from{' '}
           <a href="https://github.com/kelviq/tare" target="_blank" rel="noreferrer">
             tare
           </a>{' '}

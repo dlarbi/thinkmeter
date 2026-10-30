@@ -14,6 +14,7 @@ class NodeType(str, Enum):
     FILE = "file"
     AGENT = "agent"
     PROMPT = "prompt"
+    THINKING = "thinking"
     CONTEXT = "context"
     SESSION = "session"
     COMPACTION = "compaction"
@@ -83,6 +84,8 @@ class TokenEdge(BaseModel):
 class SessionSummary(BaseModel):
     id: str
     project: str
+    title: Optional[str] = None
+    preview: Optional[str] = None
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     request_count: int = 0

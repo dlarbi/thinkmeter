@@ -4,6 +4,7 @@ export type NodeType =
   | 'file'
   | 'agent'
   | 'prompt'
+  | 'thinking'
   | 'context'
   | 'session'
   | 'compaction'
@@ -49,6 +50,8 @@ export interface TokenEdge {
 export interface SessionSummary {
   id: string
   project: string
+  title?: string | null
+  preview?: string | null
   started_at?: string | null
   ended_at?: string | null
   request_count: number

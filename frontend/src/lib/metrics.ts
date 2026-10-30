@@ -61,6 +61,8 @@ export function typeColor(type: string): string {
       return 'var(--c-agent)'
     case 'prompt':
       return 'var(--c-prompt)'
+    case 'thinking':
+      return 'var(--c-thinking)'
     case 'context':
       return 'var(--c-context)'
     case 'session':
