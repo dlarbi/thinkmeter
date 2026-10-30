@@ -1,0 +1,6 @@
+Token Graph includes parsing and accounting logic adapted from tare / ccaudit:
+
+  https://github.com/kelviq/tare
+
+Copyright (c) 2026 the ccaudit contributors
+Licensed under the MIT License. See that project's LICENSE for details.

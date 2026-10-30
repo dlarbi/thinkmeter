@@ -1,0 +1,19 @@
+[project]
+name = "token-graph"
+version = "0.1.0"
+description = "Visual profiler for AI agent token consumption"
+readme = "../README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "pydantic==2.10.5",
+  "python-multipart==0.0.20",
+]
+
+[project.scripts]
+token-graph = "token_graph.main:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["token_graph*"]
