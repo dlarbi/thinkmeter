@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .models import SessionSummary
-from .parser import weight_usd
+from .parser import session_preview_from_requests, session_title_from_requests, weight_usd
 
 DEFAULT_DB = Path.home() / ".token-graph" / "token_graph.db"
 
@@ -31,6 +31,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     project TEXT NOT NULL,
+                    title TEXT,
+                    preview TEXT,
                     started_at TEXT,
                     ended_at TEXT,
                     request_count INTEGER DEFAULT 0,
@@ -48,6 +50,15 @@ class Store:
                 );
                 """
             )
+            # Migrations for DBs created before title/preview existed
+            cols = {
+                r[1]
+                for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            if "title" not in cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+            if "preview" not in cols:
+                conn.execute("ALTER TABLE sessions ADD COLUMN preview TEXT")
 
     def upsert_session(
         self,
@@ -78,9 +89,13 @@ class Store:
             for r in requests
         )
         cost = sum(weight_usd(r) for r in requests)
+        title = session_title_from_requests(requests)
+        preview = session_preview_from_requests(requests)
         summary = SessionSummary(
             id=session_id,
             project=project,
+            title=title,
+            preview=preview,
             started_at=started,
             ended_at=ended,
             request_count=len(requests),
@@ -91,7 +106,6 @@ class Store:
             source=source,  # type: ignore[arg-type]
         )
 
-        # Serialize datetimes for JSON storage
         def serialize(obj: Any) -> Any:
             if hasattr(obj, "isoformat"):
                 return obj.isoformat()
@@ -101,11 +115,13 @@ class Store:
             conn.execute(
                 """
                 INSERT INTO sessions (
-                    id, project, started_at, ended_at, request_count, tool_count,
-                    total_tokens, cost_usd, models, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, project, title, preview, started_at, ended_at, request_count,
+                    tool_count, total_tokens, cost_usd, models, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     project=excluded.project,
+                    title=excluded.title,
+                    preview=excluded.preview,
                     started_at=excluded.started_at,
                     ended_at=excluded.ended_at,
                     request_count=excluded.request_count,
@@ -118,6 +134,8 @@ class Store:
                 (
                     summary.id,
                     summary.project,
+                    summary.title,
+                    summary.preview,
                     summary.started_at,
                     summary.ended_at,
                     summary.request_count,
@@ -144,28 +162,29 @@ class Store:
             )
         return summary
 
+    def _row_to_summary(self, r: sqlite3.Row) -> SessionSummary:
+        keys = r.keys()
+        return SessionSummary(
+            id=r["id"],
+            project=r["project"],
+            title=r["title"] if "title" in keys else None,
+            preview=r["preview"] if "preview" in keys else None,
+            started_at=r["started_at"],
+            ended_at=r["ended_at"],
+            request_count=r["request_count"],
+            tool_count=r["tool_count"],
+            total_tokens=r["total_tokens"],
+            cost_usd=r["cost_usd"],
+            models=json.loads(r["models"] or "[]"),
+            source=r["source"],
+        )
+
     def list_sessions(self) -> list[SessionSummary]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM sessions ORDER BY started_at DESC NULLS LAST, id"
             ).fetchall()
-        out = []
-        for r in rows:
-            out.append(
-                SessionSummary(
-                    id=r["id"],
-                    project=r["project"],
-                    started_at=r["started_at"],
-                    ended_at=r["ended_at"],
-                    request_count=r["request_count"],
-                    tool_count=r["tool_count"],
-                    total_tokens=r["total_tokens"],
-                    cost_usd=r["cost_usd"],
-                    models=json.loads(r["models"] or "[]"),
-                    source=r["source"],
-                )
-            )
-        return out
+        return [self._row_to_summary(r) for r in rows]
 
     def get_session_data(self, session_id: str) -> Optional[tuple[list[dict], list[dict]]]:
         with self._connect() as conn:
@@ -184,18 +203,7 @@ class Store:
             ).fetchone()
         if not r:
             return None
-        return SessionSummary(
-            id=r["id"],
-            project=r["project"],
-            started_at=r["started_at"],
-            ended_at=r["ended_at"],
-            request_count=r["request_count"],
-            tool_count=r["tool_count"],
-            total_tokens=r["total_tokens"],
-            cost_usd=r["cost_usd"],
-            models=json.loads(r["models"] or "[]"),
-            source=r["source"],
-        )
+        return self._row_to_summary(r)
 
     def delete_session(self, session_id: str) -> bool:
         with self._connect() as conn:

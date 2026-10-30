@@ -19,8 +19,10 @@ def main() -> int:
     assert requests, "expected demo requests"
     assert tools, "expected demo tools"
     assert all("amplified" in t for t in tools)
+    assert any(r.get("user_prompt") for r in requests), "expected user prompts"
+    assert any(r.get("thinking") for r in requests), "expected thinking blocks"
+    assert any(r.get("cost_usd") for r in requests), "expected reported costs"
 
-    # Dedup sanity: request ids unique
     ids = [r["request_id"] for r in requests]
     assert len(ids) == len(set(ids)), "duplicate request ids after parse"
 
@@ -28,16 +30,18 @@ def main() -> int:
     attr = build_attribution_graph(sid, requests, tools, GraphMetric.AMPLIFIED)
 
     assert any(n.type.value == "request" for n in exe.nodes)
+    assert any(n.type.value == "prompt" for n in exe.nodes), "expected prompt nodes"
+    assert any(n.type.value == "thinking" for n in exe.nodes), "expected thinking nodes"
+    assert any(n.cost_usd and n.cost_usd > 0 for n in exe.nodes), "expected cost on nodes"
     assert any(n.tokens.amplified > 0 for n in attr.nodes)
 
-    # Top amplified source should be Dashboard or MCP-ish
     sources = [n for n in attr.nodes if n.meta.get("kind") == "source"]
     sources.sort(key=lambda n: n.tokens.amplified, reverse=True)
     top = sources[0]
     print(f"session={sid} project={project}")
     print(f"requests={len(requests)} tools={len(tools)}")
     print(f"exe_nodes={len(exe.nodes)} attr_nodes={len(attr.nodes)}")
-    print(f"top_source={top.label} injected={top.tokens.injected} amplified={top.tokens.amplified}")
+    print(f"top_source={top.label} injected={top.tokens.injected} amplified={top.tokens.amplified} cost={top.cost_usd}")
     print("OK")
     return 0
 
