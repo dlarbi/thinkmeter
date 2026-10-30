@@ -1,13 +1,15 @@
 import dagre from 'dagre'
 import type { Edge, Node } from '@xyflow/react'
 import type { GraphMetric, GraphPayload, GraphView } from '../types'
-import { diameterFor, metricValue } from './metrics'
+import { diameterFor, formatCost, metricValue } from './metrics'
 
 export interface SizedNodeData {
   label: string
   type: string
   diameter: number
   metricLabel: string
+  costLabel: string | null
+  preview: string | null
   raw: GraphPayload['nodes'][number]
   [key: string]: unknown
 }
@@ -22,11 +24,24 @@ export function layoutGraph(
 
   const rfNodes: Node<SizedNodeData>[] = payload.nodes.map((n, i) => {
     const value = values[i]
+    const isNarrative = n.meta?.kind === 'narrative' || n.type === 'thinking' || n.type === 'prompt'
     const diameter = n.meta?.kind === 'group'
       ? 56
       : n.type === 'session' || (n.meta?.kind === 'sink' && view === 'attribution')
         ? 72
-        : diameterFor(value, maxVal, view === 'attribution' ? 44 : 40, view === 'attribution' ? 140 : 110)
+        : isNarrative
+          ? 64
+          : diameterFor(
+              value,
+              maxVal,
+              view === 'attribution' ? 44 : 44,
+              view === 'attribution' ? 140 : 118,
+            )
+
+    const costLabel =
+      n.cost_usd != null && Number(n.cost_usd) > 0
+        ? formatCost(n.cost_usd)
+        : null
 
     return {
       id: n.id,
@@ -37,6 +52,8 @@ export function layoutGraph(
         type: n.type,
         diameter,
         metricLabel: formatMetricLabel(value, metric),
+        costLabel: metric === 'cost' ? null : costLabel,
+        preview: typeof n.meta?.preview === 'string' ? n.meta.preview : n.detail || null,
         raw: n,
       },
       style: { width: diameter, height: diameter },
@@ -45,7 +62,6 @@ export function layoutGraph(
 
   const rfEdges: Edge[] = payload.edges
     .filter((e) => {
-      // Keep the graph readable: skip reverse retain edges in execution view
       if (view === 'execution' && e.relation === 'retains') return false
       return true
     })
@@ -62,7 +78,9 @@ export function layoutGraph(
             ? 'var(--edge-follow)'
             : e.relation === 'calls'
               ? 'var(--edge-call)'
-              : 'var(--edge-default)',
+              : e.relation === 'returns'
+                ? 'var(--c-thinking)'
+                : 'var(--edge-default)',
         strokeWidth: e.relation === 'follows' ? 2 : 1.25,
       },
     }))
@@ -71,8 +89,8 @@ export function layoutGraph(
   g.setDefaultEdgeLabel(() => ({}))
   g.setGraph({
     rankdir: view === 'execution' ? 'LR' : 'TB',
-    nodesep: view === 'execution' ? 28 : 36,
-    ranksep: view === 'execution' ? 72 : 64,
+    nodesep: view === 'execution' ? 36 : 36,
+    ranksep: view === 'execution' ? 80 : 64,
     marginx: 40,
     marginy: 40,
   })

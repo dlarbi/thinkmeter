@@ -14,7 +14,7 @@ export function Inspector({ detail, graph, loading, onClose, onSelectRelated }: 
     return (
       <aside className="tg-inspector is-empty">
         <p className="tg-inspector-empty">
-          Select a node to inspect token sources, cache behavior, and amplification assumptions.
+          Select a node to read the prompt, thinking, and token impact for that step.
         </p>
         {graph && (
           <div className="tg-assumptions">
@@ -41,6 +41,11 @@ export function Inspector({ detail, graph, loading, onClose, onSelectRelated }: 
   const { node } = detail
   const amp = node.tokens.amplified
   const inj = node.tokens.injected
+  const userPrompt = strMeta(node, 'user_prompt')
+  const thinking = strMeta(node, 'thinking')
+  const assistantText = strMeta(node, 'assistant_text')
+  const intent = strMeta(node, 'intent')
+  const toolSummary = strMeta(node, 'tool_summary')
 
   return (
     <aside className="tg-inspector">
@@ -65,8 +70,31 @@ export function Inspector({ detail, graph, loading, onClose, onSelectRelated }: 
         <p className="tg-path">{node.detail}</p>
       )}
       {node.model && <p className="tg-muted">Model · {node.model}</p>}
+      {node.cost_usd != null && (
+        <p className="tg-cost-banner">
+          {formatCost(node.cost_usd)}
+          <span> · {node.cost_source}</span>
+        </p>
+      )}
 
       <p className="tg-explanation">{detail.explanation}</p>
+
+      {(userPrompt || thinking || assistantText || intent) && (
+        <section className="tg-section tg-narrative">
+          <h3>What this step means</h3>
+          {userPrompt && <NarrativeBlock title="User prompt" body={userPrompt} tone="prompt" />}
+          {thinking && <NarrativeBlock title="Thinking" body={thinking} tone="thinking" />}
+          {assistantText && (
+            <NarrativeBlock title="Assistant" body={assistantText} tone="assistant" />
+          )}
+          {intent && !userPrompt && (
+            <NarrativeBlock title="Tool intent" body={intent} tone="intent" />
+          )}
+          {toolSummary && (
+            <NarrativeBlock title="Tools in this turn" body={toolSummary} tone="intent" />
+          )}
+        </section>
+      )}
 
       <div className="tg-stat-grid">
         <Stat label="Injected" value={inj ? formatTokens(inj) : '—'} hint="direct" />
@@ -138,6 +166,23 @@ export function Inspector({ detail, graph, loading, onClose, onSelectRelated }: 
   )
 }
 
+function NarrativeBlock({
+  title,
+  body,
+  tone,
+}: {
+  title: string
+  body: string
+  tone: 'prompt' | 'thinking' | 'assistant' | 'intent'
+}) {
+  return (
+    <div className={`tg-narr tg-narr-${tone}`}>
+      <span className="tg-narr-title">{title}</span>
+      <pre>{body}</pre>
+    </div>
+  )
+}
+
 function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
     <div className="tg-stat">
@@ -146,4 +191,9 @@ function Stat({ label, value, hint }: { label: string; value: string; hint: stri
       <span className="tg-stat-hint">{hint}</span>
     </div>
   )
+}
+
+function strMeta(node: TokenNode, key: string): string | null {
+  const v = node.meta?.[key]
+  return typeof v === 'string' && v.trim() ? v : null
 }

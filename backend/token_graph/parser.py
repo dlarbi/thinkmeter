@@ -7,6 +7,7 @@ Copyright (c) 2026 the ccaudit contributors.
 Reads ~/.claude/projects/<slug>/<session-id>.jsonl, deduplicates usage
 records, estimates tool-result injection size, and computes amplified
 token-reads (injected × subsequent requests that re-send context).
+Also extracts user prompts, assistant text, and thinking for the UI.
 """
 
 from __future__ import annotations
@@ -93,6 +94,58 @@ def est_tokens(obj: Any) -> int:
         return int(len(str(obj)) / CHARS_PER_TOKEN)
 
 
+def _clip(text: str, n: int = 280) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if len(text) <= n:
+        return text
+    return text[: n - 1].rstrip() + "…"
+
+
+def _tool_intent(tool_input: Any) -> Optional[str]:
+    tip = tool_input if isinstance(tool_input, dict) else {}
+    for key in ("prompt", "description", "command", "query", "pattern", "content"):
+        val = tip.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def extract_text_parts(blocks: list[dict], msg: dict) -> tuple[str, str, str]:
+    """Return (text, thinking, tool_summary) from content blocks."""
+    texts: list[str] = []
+    thoughts: list[str] = []
+    tool_bits: list[str] = []
+
+    raw = msg.get("content")
+    if isinstance(raw, str) and raw.strip():
+        texts.append(raw.strip())
+
+    for b in blocks:
+        btype = b.get("type")
+        if btype in ("text", "output_text"):
+            t = b.get("text") or b.get("content") or ""
+            if isinstance(t, str) and t.strip():
+                texts.append(t.strip())
+        elif btype in ("thinking", "reasoning"):
+            t = b.get("thinking") or b.get("text") or b.get("content") or ""
+            if isinstance(t, str) and t.strip():
+                thoughts.append(t.strip())
+        elif btype == "tool_use":
+            name = b.get("name") or "tool"
+            label, detail = normalize_tool(name, b.get("input"))
+            intent = _tool_intent(b.get("input"))
+            if detail and intent:
+                tool_bits.append(f"{label} → {detail}: {_clip(intent, 100)}")
+            elif detail:
+                tool_bits.append(f"{label} → {detail}")
+            elif intent:
+                tool_bits.append(f"{label}: {_clip(intent, 120)}")
+            else:
+                tool_bits.append(label)
+
+    return "\n\n".join(texts), "\n\n".join(thoughts), "; ".join(tool_bits)
+
+
 def rate_for(model: str) -> Optional[dict]:
     m = model.lower()
     for k in sorted(MODEL_RATES, key=len, reverse=True):
@@ -126,7 +179,10 @@ def parse_session(
     requests: list[dict] = []
     tool_events: list[dict] = []
     tool_names: dict[str, tuple[str, Optional[str]]] = {}
+    tool_intents: dict[str, str] = {}
     seen: dict[str, int] = {}
+    pending_user_prompts: list[str] = []
+    session_title: Optional[str] = None
 
     try:
         fh = open(fp, "r", encoding="utf-8", errors="replace")
@@ -151,12 +207,25 @@ def parse_session(
             ts = parse_ts(e.get("timestamp"))
             msg = e.get("message") if isinstance(e.get("message"), dict) else {}
             blocks = content_blocks(e)
+            role = msg.get("role") or e.get("type")
+
+            # Capture human prompts (text turns, not pure tool_result turns)
+            if role == "user" or e.get("type") == "user":
+                has_tool_result = any(b.get("type") == "tool_result" for b in blocks)
+                text, _th, _tools = extract_text_parts(blocks, msg)
+                if text:
+                    pending_user_prompts.append(text)
+                    if session_title is None and not has_tool_result:
+                        session_title = _clip(text, 96)
 
             for b in blocks:
-                if b.get("type") == "tool_use":
-                    tool_names[b.get("id")] = normalize_tool(
-                        b.get("name"), b.get("input")
-                    )
+                if b.get("type") != "tool_use":
+                    continue
+                tid = b.get("id")
+                tool_names[tid] = normalize_tool(b.get("name"), b.get("input"))
+                intent = _tool_intent(b.get("input"))
+                if intent and tid:
+                    tool_intents[tid] = intent
 
             for b in blocks:
                 if b.get("type") != "tool_result":
@@ -178,6 +247,7 @@ def parse_session(
                         "is_error": bool(b.get("is_error")),
                         "req_index": len(requests),
                         "tool_use_id": b.get("tool_use_id"),
+                        "intent": tool_intents.get(b.get("tool_use_id") or ""),
                     }
                 )
 
@@ -192,14 +262,35 @@ def parse_session(
                 stats["records_old"] += 1
                 continue
 
+            asst_text, thinking, tool_summary = extract_text_parts(blocks, msg)
+            user_prompt = "\n\n".join(pending_user_prompts).strip()
+            pending_user_prompts.clear()
+
             key = e.get("requestId") or msg.get("id") or f"{fp.stem}:{lineno}"
             if key in seen:
                 prev = requests[seen[key]]
                 prev["_dupes"] += 1
                 if counts["output_tokens"] > prev["output_tokens"]:
-                    prev.update(counts)
+                    for k, v in counts.items():
+                        prev[k] = v
+                if asst_text and len(asst_text) > len(prev.get("assistant_text") or ""):
+                    prev["assistant_text"] = asst_text
+                if thinking and len(thinking) > len(prev.get("thinking") or ""):
+                    prev["thinking"] = thinking
+                if tool_summary and not prev.get("tool_summary"):
+                    prev["tool_summary"] = tool_summary
+                if user_prompt and not prev.get("user_prompt"):
+                    prev["user_prompt"] = user_prompt
                 stats["dupes"] += 1
                 continue
+
+            preview = (
+                _clip(asst_text, 72)
+                or _clip(thinking, 72)
+                or _clip(tool_summary, 72)
+                or _clip(user_prompt, 72)
+                or f"Request {len(requests) + 1}"
+            )
 
             seen[key] = len(requests)
             requests.append(
@@ -215,6 +306,11 @@ def parse_session(
                     "stop_reason": msg.get("stop_reason"),
                     "cost_usd": e.get("costUSD"),
                     "_dupes": 1,
+                    "user_prompt": user_prompt or None,
+                    "assistant_text": asst_text or None,
+                    "thinking": thinking or None,
+                    "tool_summary": tool_summary or None,
+                    "preview": preview,
                     **counts,
                 }
             )
@@ -225,6 +321,12 @@ def parse_session(
         remaining = max(0, total - t["req_index"])
         t["amplified"] = t["tokens"] * remaining
         t["affected_requests"] = remaining
+        tid = t.get("tool_use_id")
+        if tid and tid in tool_intents and not t.get("intent"):
+            t["intent"] = tool_intents[tid]
+
+    if requests and session_title:
+        requests[0]["session_title"] = session_title
     return requests, tool_events
 
 
@@ -273,6 +375,28 @@ def group_by_session(
         if t.get("project"):
             sessions[t["session"]]["project"] = t["project"]
     return dict(sessions)
+
+
+def session_title_from_requests(requests: list[dict]) -> Optional[str]:
+    if not requests:
+        return None
+    if requests[0].get("session_title"):
+        return str(requests[0]["session_title"])
+    for r in requests:
+        if r.get("user_prompt"):
+            return _clip(str(r["user_prompt"]), 96)
+    for r in requests:
+        if r.get("preview"):
+            return _clip(str(r["preview"]), 96)
+    return None
+
+
+def session_preview_from_requests(requests: list[dict]) -> Optional[str]:
+    for r in requests:
+        bit = r.get("assistant_text") or r.get("thinking") or r.get("user_prompt")
+        if bit:
+            return _clip(str(bit), 160)
+    return None
 
 
 def default_claude_projects_root() -> Path:

@@ -174,6 +174,13 @@ def _build_polished(path: Path, base: dt.datetime, sid: str) -> Path:
             "role": "assistant",
             "model": "claude-sonnet-4-20250514",
             "content": [
+                {
+                    "type": "thinking",
+                    "thinking": (
+                        "The user wants expensive patterns. I should map dependencies first, "
+                        "then inspect the largest UI surfaces that tend to bloat context."
+                    ),
+                },
                 {"type": "text", "text": "I'll start by inspecting the project layout."},
                 {"type": "tool_use", "id": "tu_pkg", "name": "Read", "input": {"file_path": "/workspace/demo-app/package.json"}},
             ],
@@ -207,6 +214,14 @@ def _build_polished(path: Path, base: dt.datetime, sid: str) -> Path:
             "role": "assistant",
             "model": "claude-sonnet-4-20250514",
             "content": [
+                {
+                    "type": "thinking",
+                    "thinking": (
+                        "package.json looks like a standard React app. Dashboard.tsx is likely "
+                        "the heaviest screen — reading it whole may amplify later."
+                    ),
+                },
+                {"type": "text", "text": "Next I'll read the main Dashboard component."},
                 {"type": "tool_use", "id": "tu_dash", "name": "Read", "input": {"file_path": "/workspace/demo-app/src/components/Dashboard.tsx"}},
             ],
             "stop_reason": "tool_use",
@@ -446,6 +461,17 @@ def _build_polished(path: Path, base: dt.datetime, sid: str) -> Path:
                 "message": {"role": "user", "content": tool_results},
             })
 
+    # Mid-session user follow-up
+    emit({
+        "type": "user",
+        "sessionId": sid,
+        "timestamp": _ts(base, 17.5),
+        "message": {
+            "role": "user",
+            "content": "Which single change would cut the most token cost next time?",
+        },
+    })
+
     # Final response
     emit({
         "type": "assistant",
@@ -455,6 +481,13 @@ def _build_polished(path: Path, base: dt.datetime, sid: str) -> Path:
             "role": "assistant",
             "model": "claude-sonnet-4-20250514",
             "content": [
+                {
+                    "type": "thinking",
+                    "thinking": (
+                        "Amplified cost is dominated by Dashboard.tsx retention. "
+                        "Recommend ranged reads and smaller MCP payloads."
+                    ),
+                },
                 {
                     "type": "text",
                     "text": (
@@ -485,9 +518,121 @@ def load_demo_session(sample_dir: Path | None = None) -> tuple[str, str, list[di
     fp = root / PROJECT / f"{SESSION_ID}.jsonl"
     build_demo_jsonl(fp)
     requests, tools = parse_session(fp, PROJECT)
-    # Ensure session id is consistent
     for r in requests:
         r["session"] = SESSION_ID
     for t in tools:
         t["session"] = SESSION_ID
     return SESSION_ID, PROJECT, requests, tools
+
+
+def load_extra_demo_sessions(
+    sample_dir: Path | None = None,
+) -> list[tuple[str, str, list[dict], list[dict]]]:
+    """Additional short demos so the session browser has something to explore."""
+    root = sample_dir or Path(__file__).resolve().parents[2] / "sample_data"
+    out: list[tuple[str, str, list[dict], list[dict]]] = []
+
+    variants = [
+        (
+            "demo-session-refactor-002",
+            "billing-service",
+            "Refactor the invoice worker to batch Stripe calls.",
+            "I'll sketch a batching plan, then inspect the worker entrypoint.",
+            "Batching should cut API chatter; check retry paths carefully.",
+        ),
+        (
+            "demo-session-mcp-noise-003",
+            "obs-dashboard",
+            "Why is my Datadog MCP blowing up context every turn?",
+            "I'll query the MCP once and measure how much sticks in later requests.",
+            "The MCP payload is huge — cache outside the model and summarize.",
+        ),
+    ]
+
+    for sid, project, user_q, asst, think in variants:
+        base = dt.datetime(2026, 10, 28, 16, 0, 0, tzinfo=dt.timezone.utc)
+        fp = root / project / f"{sid}.jsonl"
+        lines = [
+            {
+                "type": "user",
+                "sessionId": sid,
+                "timestamp": _ts(base, 0),
+                "message": {"role": "user", "content": user_q},
+            },
+            {
+                "type": "assistant",
+                "sessionId": sid,
+                "timestamp": _ts(base, 0.2),
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-20250514",
+                    "content": [
+                        {"type": "thinking", "thinking": think},
+                        {"type": "text", "text": asst},
+                        {
+                            "type": "tool_use",
+                            "id": f"{sid}-read",
+                            "name": "Read",
+                            "input": {"file_path": f"/workspace/{project}/src/main.ts"},
+                        },
+                    ],
+                    "stop_reason": "tool_use",
+                    "usage": {
+                        "input_tokens": 1800,
+                        "output_tokens": 220,
+                        "cache_creation_input_tokens": 1500,
+                        "cache_read_input_tokens": 0,
+                    },
+                },
+                "requestId": f"{sid}-r1",
+                "costUSD": 0.018,
+            },
+            {
+                "type": "user",
+                "sessionId": sid,
+                "timestamp": _ts(base, 0.4),
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": f"{sid}-read",
+                            "content": "X" * (6000 * 4),
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "assistant",
+                "sessionId": sid,
+                "timestamp": _ts(base, 1.0),
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-20250514",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Done — the early file read will amplify if we keep going.",
+                        }
+                    ],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 500,
+                        "output_tokens": 180,
+                        "cache_creation_input_tokens": 6000,
+                        "cache_read_input_tokens": 2000,
+                    },
+                },
+                "requestId": f"{sid}-r2",
+                "costUSD": 0.028,
+            },
+        ]
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+        requests, tools = parse_session(fp, project)
+        for r in requests:
+            r["session"] = sid
+        for t in tools:
+            t["session"] = sid
+        out.append((sid, project, requests, tools))
+    return out
